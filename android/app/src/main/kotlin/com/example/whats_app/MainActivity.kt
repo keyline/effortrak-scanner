@@ -1,4 +1,4 @@
-package com.example.whats_app
+package com.keyline.quickwa
 
 import io.flutter.embedding.android.FlutterActivity
 

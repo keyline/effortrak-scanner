@@ -1,6 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    
+    <uses-permission android:name="android.permission.INTERNET"/>
+
     <application
-        android:label="whats_app"
+        android:label="QuickWA Sender"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

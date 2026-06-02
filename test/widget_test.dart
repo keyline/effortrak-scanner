@@ -1,30 +1,39 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-import 'package:whats_app/main.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:whats_app/app/whats_app.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  TestWidgetsFlutterBinding.ensureInitialized();
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+  setUp(() {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+  });
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+  testWidgets('renders the WhatsApp sender home screen', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(const WhatsAppSenderApp());
+    await tester.pumpAndSettle();
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    expect(find.text('Direct WhatsApp'), findsOneWidget);
+    expect(find.text('Receiver Number'), findsOneWidget);
+    expect(find.text('Quick Message'), findsWidgets);
+    expect(find.text('Open WhatsApp'), findsOneWidget);
+  });
+
+  testWidgets('switches to custom message mode', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(const WhatsAppSenderApp());
+    await tester.pumpAndSettle();
+
+    expect(find.text('Choose Message'), findsOneWidget);
+    expect(find.text('Custom Message'), findsOneWidget);
+
+    await tester.tap(find.text('Custom Message').first);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Type your message and send'), findsOneWidget);
+    expect(find.text('Choose Message'), findsNothing);
   });
 }

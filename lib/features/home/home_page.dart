@@ -544,7 +544,7 @@ class _HomePageState extends State<HomePage> {
                                 ),
                                 const SizedBox(height: 10),
                                 DropdownButtonFormField<String>(
-                                  value: selectedQuickMessage,
+                                  initialValue: selectedQuickMessage,
                                   dropdownColor: Colors.white,
                                   iconEnabledColor: const Color(0xFF128C7E),
                                   isExpanded: true,
