@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../features/home/home_page.dart';
+import '../features/landing/landing_page.dart';
 
 class WhatsAppSenderApp extends StatelessWidget {
   const WhatsAppSenderApp({super.key});
@@ -9,14 +9,12 @@ class WhatsAppSenderApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'WhatsApp Sender',
+      title: 'EfforTrak Scanner',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF128C7E),
-        ),
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF128C7E)),
         useMaterial3: true,
       ),
-      home: const HomePage(),
+      home: const LandingPage(),
     );
   }
 }
