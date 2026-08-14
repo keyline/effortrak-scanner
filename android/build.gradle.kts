@@ -17,6 +17,18 @@ subprojects {
 }
 subprojects {
     project.evaluationDependsOn(":app")
+
+    // CameraX exposes CallbackToFutureAdapter in a class signature, but declares
+    // concurrent-futures as a runtime-only dependency. Javac needs it while
+    // compiling the Flutter CameraX plugin with AGP 9.
+    if (name == "camera_android_camerax") {
+        pluginManager.withPlugin("com.android.library") {
+            dependencies.add(
+                "implementation",
+                "androidx.concurrent:concurrent-futures:1.1.0",
+            )
+        }
+    }
 }
 
 tasks.register<Delete>("clean") {
