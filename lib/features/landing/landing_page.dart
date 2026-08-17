@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../home/home_page.dart';
 import '../scan/scan_card_page.dart';
@@ -124,12 +125,48 @@ class LandingPage extends StatelessWidget {
                       fontWeight: FontWeight.w600,
                     ),
                   ),
+                  const SizedBox(height: 4),
+                  const _AppVersionLabel(),
                 ],
               ),
             ),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _AppVersionLabel extends StatefulWidget {
+  const _AppVersionLabel();
+
+  @override
+  State<_AppVersionLabel> createState() => _AppVersionLabelState();
+}
+
+class _AppVersionLabelState extends State<_AppVersionLabel> {
+  late final Future<PackageInfo> _packageInfo = PackageInfo.fromPlatform();
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<PackageInfo>(
+      future: _packageInfo,
+      builder: (context, snapshot) {
+        final version = snapshot.data?.version;
+        return SizedBox(
+          height: 15,
+          child: version == null
+              ? null
+              : Text(
+                  'Version $version',
+                  style: const TextStyle(
+                    color: Color(0xFF5F7D76),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+        );
+      },
     );
   }
 }
