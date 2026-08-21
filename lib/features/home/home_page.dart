@@ -9,6 +9,10 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../widgets/app_input_decoration.dart';
 import '../../widgets/contact_saved_animation.dart';
 import '../../widgets/title_case_formatter.dart';
+import '../create_contact/create_contact_page.dart';
+import '../contacts/duplicate_contact_guard.dart';
+import '../create_contact/contact_card_share.dart';
+import '../templates/whatsapp_templates.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({
@@ -27,16 +31,15 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  static const savedMessagesKey = 'saved_quick_sms';
+  static const defaultWhatsAppMessage = 'Hi.';
   final nameController = TextEditingController();
   final numberController = TextEditingController();
   bool sendWhatsApp = false;
+  bool sendMyCard = false;
   bool saving = false;
+  ContactCardData? myCard;
   String? selectedQuickMessage;
-  List<String> savedMessages = <String>[
-    'Hello, I wanted to contact you regarding your request.',
-    'Hi, please let me know when you are available.',
-  ];
+  List<String> savedMessages = List<String>.from(defaultWhatsAppTemplates);
 
   @override
   void initState() {
@@ -44,12 +47,19 @@ class _HomePageState extends State<HomePage> {
     nameController.text = widget.initialName;
     numberController.text = widget.initialPhone;
     sendWhatsApp = widget.whatsAppOnly;
+    if (sendWhatsApp) selectedQuickMessage = defaultWhatsAppMessage;
     _loadSavedMessages();
+    _loadMyCard();
+  }
+
+  Future<void> _loadMyCard() async {
+    final card = await ContactCardData.load();
+    if (mounted) setState(() => myCard = card);
   }
 
   Future<void> _loadSavedMessages() async {
     final prefs = await SharedPreferences.getInstance();
-    final stored = prefs.getStringList(savedMessagesKey);
+    final stored = prefs.getStringList(savedWhatsAppTemplatesKey);
     if (stored != null && mounted) setState(() => savedMessages = stored);
   }
 
@@ -119,7 +129,7 @@ class _HomePageState extends State<HomePage> {
       ...savedMessages.where((m) => m != message),
     ];
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(savedMessagesKey, updated);
+    await prefs.setStringList(savedWhatsAppTemplatesKey, updated);
     if (mounted) {
       setState(() {
         savedMessages = updated;
@@ -139,10 +149,6 @@ class _HomePageState extends State<HomePage> {
     if (digits.length < 10) {
       return _showMessage('Please enter a valid phone number.');
     }
-    if (sendWhatsApp && selectedQuickMessage == null) {
-      return _showMessage('Please select a quick message.');
-    }
-
     setState(() => saving = true);
     try {
       if (!widget.whatsAppOnly) {
@@ -153,6 +159,11 @@ class _HomePageState extends State<HomePage> {
           _showMessage('Contacts permission is required to save this contact.');
           return;
         }
+        final duplicate = await findDuplicateContact(phone);
+        if (duplicate != null && mounted) {
+          final saveAnyway = await confirmSaveDuplicate(context, duplicate);
+          if (!saveAnyway) return;
+        }
         await FlutterContacts.create(
           Contact(
             name: Name(first: name),
@@ -162,11 +173,19 @@ class _HomePageState extends State<HomePage> {
         if (mounted) await showContactSavedAnimation(context);
       }
 
-      if (sendWhatsApp) {
-        final opened = await _openWhatsApp(
-          digits,
-          selectedQuickMessage!.trim(),
+      if (sendMyCard && myCard != null) {
+        final template = selectedQuickMessage?.trim().isNotEmpty == true
+            ? selectedQuickMessage!.trim()
+            : defaultWhatsAppMessage;
+        await shareContactAsVcf(
+          myCard!,
+          message: sendWhatsApp ? template : null,
         );
+      } else if (sendWhatsApp) {
+        final message = selectedQuickMessage?.trim().isNotEmpty == true
+            ? selectedQuickMessage!.trim()
+            : defaultWhatsAppMessage;
+        final opened = await _openWhatsApp(digits, message);
         if (!opened && mounted) {
           _showMessage('WhatsApp could not be opened on this phone.');
         }
@@ -199,7 +218,16 @@ class _HomePageState extends State<HomePage> {
           // Try WhatsApp Business when standard WhatsApp is unavailable.
         }
       }
-      return false;
+      try {
+        return await launchUrl(
+          Uri.parse(
+            'https://wa.me/$digits?text=${Uri.encodeComponent(message)}',
+          ),
+          mode: LaunchMode.externalApplication,
+        );
+      } catch (_) {
+        return false;
+      }
     }
     try {
       if (await launchUrl(appUri, mode: LaunchMode.externalApplication)) {
@@ -303,50 +331,49 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  Material(
-                    color: Colors.transparent,
-                    child: CheckboxListTile(
-                      value: sendWhatsApp,
-                      onChanged: widget.whatsAppOnly
-                          ? null
-                          : (value) =>
-                                setState(() => sendWhatsApp = value ?? false),
-                      contentPadding: EdgeInsets.zero,
-                      dense: true,
-                      activeColor: const Color(0xFF25D366),
-                      controlAffinity: ListTileControlAffinity.leading,
-                      title: Row(
-                        children: [
-                          const Expanded(
-                            child: Text(
-                              'Send WhatsApp',
-                              style: TextStyle(
-                                color: Color(0xFF153D36),
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                          if (sendWhatsApp)
-                            TextButton.icon(
-                              onPressed: _createTemplate,
-                              style: TextButton.styleFrom(
-                                foregroundColor: const Color(0xFF128C7E),
-                                visualDensity: VisualDensity.compact,
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 6,
-                                ),
-                              ),
-                              icon: const Icon(Icons.add_rounded, size: 18),
-                              label: const Text(
-                                'New template',
-                                style: TextStyle(fontWeight: FontWeight.w700),
-                              ),
-                            ),
-                        ],
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _CompactCheckbox(
+                          label: 'Send message',
+                          value: sendWhatsApp,
+                          onChanged: widget.whatsAppOnly
+                              ? null
+                              : (value) => setState(() {
+                                  sendWhatsApp = value;
+                                  if (value) {
+                                    selectedQuickMessage ??=
+                                        defaultWhatsAppMessage;
+                                  }
+                                }),
+                        ),
                       ),
-                    ),
+                      Expanded(
+                        child: _CompactCheckbox(
+                          label: 'Send my card',
+                          value: sendMyCard,
+                          onChanged: myCard == null
+                              ? null
+                              : (value) => setState(() {
+                                  sendMyCard = value;
+                                }),
+                        ),
+                      ),
+                    ],
                   ),
                   if (sendWhatsApp) ...[
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton.icon(
+                        onPressed: _createTemplate,
+                        style: TextButton.styleFrom(
+                          foregroundColor: const Color(0xFF128C7E),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        icon: const Icon(Icons.add_rounded, size: 18),
+                        label: const Text('New template'),
+                      ),
+                    ),
                     const SizedBox(height: 4),
                     DropdownButtonFormField<String>(
                       initialValue: selectedQuickMessage,
@@ -357,16 +384,22 @@ class _HomePageState extends State<HomePage> {
                         hint: 'Select a saved message',
                         icon: Icons.sms_outlined,
                       ),
-                      items: savedMessages.map((message) {
-                        return DropdownMenuItem<String>(
-                          value: message,
-                          child: Text(
-                            message,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        );
-                      }).toList(),
+                      items:
+                          <String>[
+                            defaultWhatsAppMessage,
+                            ...savedMessages.where(
+                              (message) => message != defaultWhatsAppMessage,
+                            ),
+                          ].map((message) {
+                            return DropdownMenuItem<String>(
+                              value: message,
+                              child: Text(
+                                message,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            );
+                          }).toList(),
                       onChanged: (message) =>
                           setState(() => selectedQuickMessage = message),
                     ),
@@ -409,4 +442,68 @@ class _HomePageState extends State<HomePage> {
       ),
     );
   }
+}
+
+class _CompactCheckbox extends StatelessWidget {
+  const _CompactCheckbox({
+    required this.label,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final String label;
+  final bool value;
+  final ValueChanged<bool>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onChanged == null ? null : () => onChanged!(!value),
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Row(
+          children: [
+            Checkbox(
+              value: value,
+              onChanged: onChanged == null
+                  ? null
+                  : (checked) => onChanged!(checked ?? false),
+              activeColor: const Color(0xFF25D366),
+              visualDensity: VisualDensity.compact,
+            ),
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                style: TextStyle(
+                  color: onChanged == null
+                      ? Colors.grey
+                      : const Color(0xFF153D36),
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String formatContactCardMessage(ContactCardData card) {
+  final lines = <String>[
+    'My contact card',
+    card.name,
+    'Phone: ${card.phone}',
+    if (card.alternatePhone.isNotEmpty) 'Alternate: ${card.alternatePhone}',
+    if (card.email.isNotEmpty) 'Email: ${card.email}',
+    if (card.website.isNotEmpty) 'Website: ${card.website}',
+    if (card.facebook.isNotEmpty) 'Facebook: ${card.facebook}',
+    if (card.instagram.isNotEmpty) 'Instagram: ${card.instagram}',
+    if (card.linkedIn.isNotEmpty) 'LinkedIn: ${card.linkedIn}',
+    if (card.bio.isNotEmpty) card.bio,
+  ];
+  return lines.join('\n');
 }

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:upgrader/upgrader.dart';
 
@@ -14,7 +15,7 @@ class WhatsAppSenderApp extends StatefulWidget {
 }
 
 class _WhatsAppSenderAppState extends State<WhatsAppSenderApp> {
-  late final Upgrader? _upgrader = widget.enableUpgrader
+  late final Upgrader? _upgrader = widget.enableUpgrader && kReleaseMode
       ? Upgrader(
           checkOnResume: true,
           countryCode: 'IN',

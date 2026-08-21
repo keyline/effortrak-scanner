@@ -13,6 +13,10 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../widgets/app_input_decoration.dart';
 import '../../widgets/contact_saved_animation.dart';
 import '../../widgets/title_case_formatter.dart';
+import '../create_contact/create_contact_page.dart';
+import '../contacts/duplicate_contact_guard.dart';
+import '../create_contact/contact_card_share.dart';
+import '../templates/whatsapp_templates.dart';
 import 'business_card_parser.dart';
 
 class ScanCardPage extends StatefulWidget {
@@ -24,7 +28,7 @@ class ScanCardPage extends StatefulWidget {
 
 class _ScanCardPageState extends State<ScanCardPage>
     with WidgetsBindingObserver {
-  static const _savedMessagesKey = 'saved_quick_sms';
+  static const _defaultWhatsAppMessage = 'Hi.';
   final _picker = ImagePicker();
   final _name = TextEditingController();
   final _company = TextEditingController();
@@ -41,7 +45,9 @@ class _ScanCardPageState extends State<ScanCardPage>
   bool _hasResult = false;
   bool _saveToContacts = true;
   bool _sendWhatsApp = false;
+  bool _sendMyContact = false;
   bool _saving = false;
+  ContactCardData? _myCard;
   String? _selectedMessage;
   List<String> _messages = const [
     'Hello, I wanted to contact you regarding your request.',
@@ -53,11 +59,20 @@ class _ScanCardPageState extends State<ScanCardPage>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _loadMessages();
+    _loadMyCard();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _startCamera();
+    });
+  }
+
+  Future<void> _loadMyCard() async {
+    final card = await ContactCardData.load();
+    if (mounted) setState(() => _myCard = card);
   }
 
   Future<void> _loadMessages() async {
     final prefs = await SharedPreferences.getInstance();
-    final stored = prefs.getStringList(_savedMessagesKey);
+    final stored = prefs.getStringList(savedWhatsAppTemplatesKey);
     if (stored != null && mounted) setState(() => _messages = stored);
   }
 
@@ -165,6 +180,7 @@ class _ScanCardPageState extends State<ScanCardPage>
       _hasResult = false;
       _saveToContacts = true;
       _sendWhatsApp = false;
+      _sendMyContact = false;
       _selectedMessage = null;
       _name.clear();
       _company.clear();
@@ -200,17 +216,27 @@ class _ScanCardPageState extends State<ScanCardPage>
 
     final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
     try {
+      final ocrImage = await _createOcrInputImage(image);
       final normalResult = await recognizer.processImage(
-        InputImage.fromFilePath(image.path),
+        InputImage.fromFilePath(ocrImage.path),
       );
-      final enhancedImage = await _createOcrEnhancedImage(image);
+      final normalText = normalResult.text.trim();
+      final firstPassCard = normalText.isEmpty
+          ? const BusinessCardData()
+          : BusinessCardParser.parse(normalText);
+      final needsFallback =
+          firstPassCard.name.trim().isEmpty ||
+          firstPassCard.mobile.replaceAll(RegExp(r'\D'), '').length < 7;
+      final enhancedImage = needsFallback
+          ? await _createOcrEnhancedImage(ocrImage)
+          : null;
       final enhancedResult = enhancedImage == null
           ? null
           : await recognizer.processImage(
               InputImage.fromFilePath(enhancedImage.path),
             );
       final recognizedText = <String>{
-        if (normalResult.text.trim().isNotEmpty) normalResult.text.trim(),
+        if (normalText.isNotEmpty) normalText,
         if (enhancedResult?.text.trim().isNotEmpty == true)
           enhancedResult!.text.trim(),
       }.join('\n');
@@ -235,18 +261,39 @@ class _ScanCardPageState extends State<ScanCardPage>
     }
   }
 
+  Future<XFile> _createOcrInputImage(XFile source) async {
+    try {
+      final decoded = img.decodeImage(await source.readAsBytes());
+      if (decoded == null) return source;
+      final oriented = img.bakeOrientation(decoded);
+      const maxDimension = 1600;
+      if (oriented.width <= maxDimension && oriented.height <= maxDimension) {
+        return source;
+      }
+      final resized = oriented.width >= oriented.height
+          ? img.copyResize(
+              oriented,
+              width: maxDimension,
+              interpolation: img.Interpolation.linear,
+            )
+          : img.copyResize(
+              oriented,
+              height: maxDimension,
+              interpolation: img.Interpolation.linear,
+            );
+      final path = '${source.path}_ocr_input.jpg';
+      await File(path).writeAsBytes(img.encodeJpg(resized, quality: 90));
+      return XFile(path);
+    } catch (_) {
+      return source;
+    }
+  }
+
   Future<XFile?> _createOcrEnhancedImage(XFile source) async {
     try {
       final decoded = img.decodeImage(await source.readAsBytes());
       if (decoded == null) return null;
       var enhanced = img.bakeOrientation(decoded);
-      if (enhanced.width < 1800) {
-        enhanced = img.copyResize(
-          enhanced,
-          width: 1800,
-          interpolation: img.Interpolation.cubic,
-        );
-      }
       enhanced = img.grayscale(enhanced);
       enhanced = img.adjustColor(enhanced, contrast: 1.42, brightness: 1.06);
       enhanced = img.convolution(
@@ -263,12 +310,8 @@ class _ScanCardPageState extends State<ScanCardPage>
   }
 
   Future<void> _save() async {
-    if (!_saveToContacts && !_sendWhatsApp) {
+    if (!_saveToContacts && !_sendWhatsApp && !_sendMyContact) {
       _message('Select at least one action to continue.');
-      return;
-    }
-    if (_sendWhatsApp && _selectedMessage == null) {
-      _message('Please select a WhatsApp template.');
       return;
     }
     final normalizedPhone = _normalizePhone(_mobile.text);
@@ -286,6 +329,11 @@ class _ScanCardPageState extends State<ScanCardPage>
         if (status != PermissionStatus.granted) {
           _message('Contacts permission is required to save this contact.');
           return;
+        }
+        final duplicate = await findDuplicateContact(normalizedPhone);
+        if (duplicate != null && mounted) {
+          final saveAnyway = await confirmSaveDuplicate(context, duplicate);
+          if (!saveAnyway) return;
         }
         await FlutterContacts.create(
           Contact(
@@ -311,8 +359,17 @@ class _ScanCardPageState extends State<ScanCardPage>
       if (_saveToContacts && mounted) {
         await showContactSavedAnimation(context);
       }
-      if (_sendWhatsApp && mounted) {
-        final message = _selectedMessage!;
+      if (_sendMyContact && _myCard != null && mounted) {
+        final template = _selectedMessage?.trim().isNotEmpty == true
+            ? _selectedMessage!.trim()
+            : _defaultWhatsAppMessage;
+        final card = _myCard!;
+        _retake();
+        await shareContactAsVcf(card, message: _sendWhatsApp ? template : null);
+      } else if (_sendWhatsApp && mounted) {
+        final message = _selectedMessage?.trim().isNotEmpty == true
+            ? _selectedMessage!.trim()
+            : _defaultWhatsAppMessage;
         _retake();
         final opened = await _openWhatsApp(digits, message);
         if (!opened) _message('WhatsApp could not be opened on this phone.');
@@ -341,7 +398,16 @@ class _ScanCardPageState extends State<ScanCardPage>
           return true;
         } catch (_) {}
       }
-      return false;
+      try {
+        return await launchUrl(
+          Uri.parse(
+            'https://wa.me/$digits?text=${Uri.encodeComponent(message)}',
+          ),
+          mode: LaunchMode.externalApplication,
+        );
+      } catch (_) {
+        return false;
+      }
     }
     try {
       return await launchUrl(uri, mode: LaunchMode.externalApplication);
@@ -555,18 +621,25 @@ class _ScanCardPageState extends State<ScanCardPage>
                           hint: 'Select a saved message',
                           icon: Icons.chat_outlined,
                         ),
-                        items: _messages
-                            .map(
-                              (message) => DropdownMenuItem<String>(
-                                value: message,
-                                child: Text(
-                                  message,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            )
-                            .toList(),
+                        items:
+                            <String>[
+                                  _defaultWhatsAppMessage,
+                                  ..._messages.where(
+                                    (message) =>
+                                        message != _defaultWhatsAppMessage,
+                                  ),
+                                ]
+                                .map(
+                                  (message) => DropdownMenuItem<String>(
+                                    value: message,
+                                    child: Text(
+                                      message,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                )
+                                .toList(),
                         onChanged: (value) =>
                             setState(() => _selectedMessage = value),
                       ),
@@ -584,45 +657,79 @@ class _ScanCardPageState extends State<ScanCardPage>
         child: SafeArea(
           top: false,
           child: _hasResult
-              ? Row(
+              ? Column(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Expanded(
-                      child: _ActionCheckbox(
-                        label: 'Save to\ncontacts',
-                        icon: Icons.person_add_alt_1_rounded,
-                        value: _saveToContacts,
-                        enabled: !_saving,
-                        onChanged: (value) =>
-                            setState(() => _saveToContacts = value),
+                    Container(
+                      padding: const EdgeInsets.all(5),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0A2924),
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: const Color(0xFF315A52)),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: _ActionCheckbox(
+                              label: 'Save contact',
+                              icon: Icons.person_add_alt_1_rounded,
+                              value: _saveToContacts,
+                              enabled: !_saving,
+                              onChanged: (value) =>
+                                  setState(() => _saveToContacts = value),
+                            ),
+                          ),
+                          const SizedBox(width: 5),
+                          Expanded(
+                            child: _ActionCheckbox(
+                              label: 'WhatsApp',
+                              icon: Icons.chat_rounded,
+                              value: _sendWhatsApp,
+                              enabled: !_saving,
+                              onChanged: (value) => setState(() {
+                                _sendWhatsApp = value;
+                                if (value) {
+                                  _selectedMessage ??= _defaultWhatsAppMessage;
+                                }
+                              }),
+                            ),
+                          ),
+                          const SizedBox(width: 5),
+                          Expanded(
+                            child: _ActionCheckbox(
+                              label: 'My contact',
+                              icon: Icons.badge_outlined,
+                              value: _sendMyContact,
+                              enabled: !_saving && _myCard != null,
+                              onChanged: (value) =>
+                                  setState(() => _sendMyContact = value),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: _ActionCheckbox(
-                        label: 'Send\nWhatsApp',
-                        icon: Icons.chat_rounded,
-                        value: _sendWhatsApp,
-                        enabled: !_saving,
-                        onChanged: (value) =>
-                            setState(() => _sendWhatsApp = value),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
+                    const SizedBox(height: 8),
                     SizedBox(
-                      width: 82,
-                      height: 58,
-                      child: FilledButton(
-                        onPressed: _saving ? null : _save,
+                      width: double.infinity,
+                      height: 52,
+                      child: FilledButton.icon(
+                        onPressed:
+                            _saving ||
+                                (!_saveToContacts &&
+                                    !_sendWhatsApp &&
+                                    !_sendMyContact)
+                            ? null
+                            : _save,
                         style: FilledButton.styleFrom(
                           backgroundColor: const Color(0xFF25D366),
                           foregroundColor: const Color(0xFF052E27),
                           disabledBackgroundColor: const Color(0xFF315A52),
-                          padding: EdgeInsets.zero,
+                          padding: const EdgeInsets.symmetric(horizontal: 20),
                           shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(18),
+                            borderRadius: BorderRadius.circular(14),
                           ),
                         ),
-                        child: _saving
+                        icon: _saving
                             ? const SizedBox.square(
                                 dimension: 20,
                                 child: CircularProgressIndicator(
@@ -630,19 +737,15 @@ class _ScanCardPageState extends State<ScanCardPage>
                                   color: Color(0xFF052E27),
                                 ),
                               )
-                            : const Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Text(
-                                    'Go',
-                                    style: TextStyle(
-                                      fontSize: 17,
-                                      fontWeight: FontWeight.w900,
-                                    ),
-                                  ),
-                                  SizedBox(width: 3),
-                                  Icon(Icons.arrow_forward_rounded, size: 19),
-                                ],
+                            : const Icon(Icons.arrow_forward_rounded, size: 21),
+                        label: _saving
+                            ? const Text('Working…')
+                            : const Text(
+                                'Continue',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w900,
+                                ),
                               ),
                       ),
                     ),
@@ -698,9 +801,7 @@ class _ScanCardPageState extends State<ScanCardPage>
                             size: 25,
                           ),
                           label: Text(
-                            _camera?.value.isInitialized == true
-                                ? 'Capture card'
-                                : 'Scan card',
+                            'Scan card',
                             style: const TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.w800,
@@ -806,38 +907,52 @@ class _ActionCheckbox extends StatelessWidget {
       onTap: enabled ? () => onChanged(!value) : null,
       borderRadius: BorderRadius.circular(16),
       child: Container(
-        height: 58,
-        padding: const EdgeInsets.symmetric(horizontal: 5),
+        height: 64,
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
         decoration: BoxDecoration(
           color: value ? const Color(0xFF103E36) : const Color(0xFF0A2924),
           border: Border.all(
             color: value ? const Color(0xFF25D366) : const Color(0xFF52736D),
           ),
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(13),
         ),
-        child: Row(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Checkbox(
-              value: value,
-              onChanged: enabled
-                  ? (checked) => onChanged(checked ?? false)
-                  : null,
-              activeColor: const Color(0xFF62D673),
-              checkColor: const Color(0xFF052E27),
-              side: const BorderSide(color: Colors.white70),
-              visualDensity: VisualDensity.compact,
-            ),
-            Icon(icon, color: Colors.white70, size: 17),
-            const SizedBox(width: 4),
-            Expanded(
-              child: Text(
-                label,
-                style: const TextStyle(
-                  color: Colors.white,
-                  height: 1.1,
-                  fontSize: 10.5,
-                  fontWeight: FontWeight.w700,
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                SizedBox.square(
+                  dimension: 24,
+                  child: Checkbox(
+                    value: value,
+                    onChanged: enabled
+                        ? (checked) => onChanged(checked ?? false)
+                        : null,
+                    activeColor: const Color(0xFF62D673),
+                    checkColor: const Color(0xFF052E27),
+                    side: const BorderSide(color: Colors.white70),
+                    visualDensity: VisualDensity.compact,
+                  ),
                 ),
+                const SizedBox(width: 5),
+                Icon(
+                  icon,
+                  color: enabled ? Colors.white70 : Colors.white30,
+                  size: 17,
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: enabled ? Colors.white : Colors.white38,
+                fontSize: 10.5,
+                fontWeight: FontWeight.w700,
               ),
             ),
           ],
